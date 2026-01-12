@@ -1,0 +1,7 @@
+{
+  "name": "Copy of BioReason - AI Lab Partner",
+  "description": "A high-end scientific experiment monitoring tool powered by Gemini 3 Pro with deep deductive reasoning capabilities.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
