@@ -2,20 +2,25 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import AnalysisView from './components/AnalysisView';
 import TelemetryPanel from './components/TelemetryPanel';
+import ExperimentTimeline from './components/ExperimentTimeline';
 import ExperimentGallery, { SampleExperiment } from './components/ExperimentGallery';
 import { analyzeExperiment } from './services/geminiService';
-import { ThinkingLevel, AnalysisState, TelemetryData } from './types';
+import { ThinkingLevel, AnalysisState, TelemetryData, HistoryItem } from './types';
 
 type InputMode = 'UPLOAD' | 'CAMERA';
+type UploadType = 'IMAGE' | 'VIDEO' | null;
 export type TelemetryMode = 'SIMULATED' | 'MANUAL';
 
 const App: React.FC = () => {
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('HIGH');
-  // Auto-enhance is now always enabled (normal mode)
   const [enablePreprocessing] = useState<boolean>(true);
   const [context, setContext] = useState<string>("");
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
   
+  // Upload State
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [videoFileSrc, setVideoFileSrc] = useState<string | null>(null);
+  const [uploadType, setUploadType] = useState<UploadType>(null);
+
   const [inputMode, setInputMode] = useState<InputMode>('UPLOAD');
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isAutoMonitoring, setIsAutoMonitoring] = useState(false);
@@ -27,14 +32,21 @@ const App: React.FC = () => {
   const [telemetryMode, setTelemetryMode] = useState<TelemetryMode>('SIMULATED');
   const [telemetry, setTelemetry] = useState<TelemetryData>({ temperature: 24.5, pressure: 101.3 });
 
+  // Analysis & History State
   const [analysis, setAnalysis] = useState<AnalysisState>({
     isLoading: false,
     result: null,
     error: null,
   });
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  
+  // Ref for live webcam
+  const webcamRef = useRef<HTMLVideoElement>(null);
+  // Ref for uploaded video file
+  const fileVideoRef = useRef<HTMLVideoElement>(null);
+  
   const monitoringIntervalRef = useRef<number | null>(null);
 
   // --- Telemetry Simulation ---
@@ -59,57 +71,111 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
       });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+      if (webcamRef.current) {
+        webcamRef.current.src = ""; // Clear src if any
+        webcamRef.current.srcObject = stream;
+        webcamRef.current.removeAttribute('crossorigin');
         setIsCameraActive(true);
       }
     } catch (err) {
       console.error("Error accessing camera:", err);
-      alert("Could not access camera. Please check permissions.");
+      alert("Could not access camera input. Please check permissions.");
     }
   };
 
   const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
+    if (webcamRef.current) {
+      // Stop Stream
+      if (webcamRef.current.srcObject) {
+        const stream = webcamRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
+        webcamRef.current.srcObject = null;
+      }
       setIsCameraActive(false);
-      setIsAutoMonitoring(false);
+      // Only stop auto-monitoring if we are switching away from camera mode entirely
+      // logic handled in useEffect below
     }
   };
 
+  // Automatically start/stop camera based on mode
   useEffect(() => {
     if (inputMode === 'CAMERA') {
       startCamera();
+      setIsAutoMonitoring(true);
     } else {
       stopCamera();
+      // If switching to upload mode, usually stop monitoring, unless it's a video file
+      if (uploadType !== 'VIDEO') {
+        setIsAutoMonitoring(false);
+      }
     }
     return () => stopCamera();
   }, [inputMode]);
 
   const captureFrame = useCallback((): string | null => {
-    if (!videoRef.current || !isCameraActive) return null;
+    // Determine which video element to capture from
+    let sourceVideo: HTMLVideoElement | null = null;
+
+    if (inputMode === 'CAMERA') {
+      sourceVideo = webcamRef.current;
+    } else if (inputMode === 'UPLOAD' && uploadType === 'VIDEO') {
+      sourceVideo = fileVideoRef.current;
+    }
+
+    if (!sourceVideo) return null;
     
-    const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(videoRef.current, 0, 0);
-      return canvas.toDataURL('image/jpeg', 0.9);
+    // Check if video is ready to supply data
+    if (sourceVideo.readyState < 2) { // HAVE_CURRENT_DATA or higher
+      // console.log("Video source not ready for capture yet.");
+      return null;
+    }
+
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = sourceVideo.videoWidth;
+      canvas.height = sourceVideo.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(sourceVideo, 0, 0);
+        return canvas.toDataURL('image/jpeg', 0.9);
+      }
+    } catch (e) {
+      console.error("Failed to capture frame:", e);
+      return null;
     }
     return null;
-  }, [isCameraActive]);
+  }, [isCameraActive, inputMode, uploadType]);
 
   // --- File Logic ---
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
+    if (!file) return;
+
+    // Reset Analysis
+    setAnalysis({ isLoading: false, result: null, error: null });
+    
+    // Cleanup previous object URL if it was a video
+    if (videoFileSrc) {
+      URL.revokeObjectURL(videoFileSrc);
+      setVideoFileSrc(null);
+    }
+
+    if (file.type.startsWith('video/')) {
+      // Handle Video
+      const url = URL.createObjectURL(file);
+      setVideoFileSrc(url);
+      setUploadType('VIDEO');
+      setImagePreview(null);
+      // Auto-enable monitoring for video files for convenience
+      setIsAutoMonitoring(false); 
+    } else {
+      // Handle Image
       const reader = new FileReader();
       reader.onloadend = () => {
         setImagePreview(reader.result as string);
-        setAnalysis({ isLoading: false, result: null, error: null });
+        setUploadType('IMAGE');
+        setVideoFileSrc(null);
+        setIsAutoMonitoring(false); // No auto monitoring for static images
       };
       reader.readAsDataURL(file);
     }
@@ -120,52 +186,91 @@ const App: React.FC = () => {
   // --- Gallery Logic ---
   const handleGallerySelect = (exp: SampleExperiment) => {
     setContext(exp.context);
-    setImagePreview(exp.imageUrl);
-    setInputMode('UPLOAD');
-    setIsGalleryOpen(false);
-    // Reset analysis when loading new experiment
     setAnalysis({ isLoading: false, result: null, error: null });
-  };
+    setHistory([]); 
 
+    // Static mode
+    if (videoFileSrc) URL.revokeObjectURL(videoFileSrc);
+    setVideoFileSrc(null);
+    setImagePreview(exp.imageUrl);
+    setUploadType('IMAGE');
+    setInputMode('UPLOAD');
+    setIsAutoMonitoring(false);
+    
+    setIsGalleryOpen(false);
+  };
+  
   // --- Preprocessing & Analysis ---
   const preprocessImage = (source: string): Promise<string> => {
     return new Promise((resolve) => {
       const img = new Image();
-      img.crossOrigin = "Anonymous"; // Allow CORS for placeholder images
+      img.crossOrigin = "Anonymous"; 
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.fillStyle = '#000';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          // Filters: enhance contrast/saturation for chemical visibility, blur for noise
-          ctx.filter = 'contrast(1.2) saturate(1.1) blur(0.5px)';
-          ctx.drawImage(img, 0, 0);
-          resolve(canvas.toDataURL('image/jpeg', 0.95));
-        } else {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.filter = 'contrast(1.2) saturate(1.1) blur(0.5px)';
+            ctx.drawImage(img, 0, 0);
+            resolve(canvas.toDataURL('image/jpeg', 0.95));
+          } else {
+            resolve(source);
+          }
+        } catch (e) {
           resolve(source);
         }
       };
-      img.onerror = () => resolve(source);
+      img.onerror = () => {
+        resolve(source);
+      };
       img.src = source;
     });
   };
 
+  const ensureBase64 = async (urlOrData: string): Promise<string> => {
+    if (urlOrData.startsWith('data:')) {
+      return urlOrData;
+    }
+    try {
+      const response = await fetch(urlOrData, { mode: 'cors' });
+      const blob = await response.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (e) {
+      console.error("Failed to convert URL to base64", e);
+      throw new Error("Unable to process image. Network or CORS error.");
+    }
+  };
+
   const handleAnalyze = async (manualImage?: string) => {
-    // If in camera mode and no image provided, capture one
-    let imageToAnalyze = manualImage || imagePreview;
+    let imageToAnalyze: string | null = null;
     
-    if (inputMode === 'CAMERA' && !manualImage) {
-      const captured = captureFrame();
-      if (captured) {
-        imageToAnalyze = captured;
-        setImagePreview(captured); // Show captured frame in preview if we want, or just analyze
+    // Determine Source
+    if (inputMode === 'CAMERA') {
+      imageToAnalyze = captureFrame();
+    } else if (inputMode === 'UPLOAD') {
+      if (uploadType === 'VIDEO') {
+        imageToAnalyze = captureFrame();
+      } else {
+        imageToAnalyze = manualImage || imagePreview;
       }
     }
 
-    if (!imageToAnalyze || !context) return;
+    if (!imageToAnalyze || !context) {
+      // Only warn if manual trigger
+      if (!isAutoMonitoring) {
+        // console.warn("Missing image or context");
+      }
+      return;
+    }
 
     setAnalysis(prev => ({ ...prev, isLoading: true, error: null }));
 
@@ -175,31 +280,51 @@ const App: React.FC = () => {
         finalImageDataUrl = await preprocessImage(imageToAnalyze);
       }
 
-      // Augment context with Telemetry Data for the AI
+      finalImageDataUrl = await ensureBase64(finalImageDataUrl);
+
       const augmentedContext = `${context}\n\n[REAL-TIME TELEMETRY]\nTemperature: ${telemetry.temperature.toFixed(2)} °C\nPressure: ${telemetry.pressure.toFixed(2)} kPa\nTimestamp: ${new Date().toISOString()}`;
 
-      const base64Data = finalImageDataUrl.split(',')[1];
+      const parts = finalImageDataUrl.split(',');
+      if (parts.length !== 2) throw new Error("Invalid image data format.");
+      const base64Data = parts[1];
+
       const result = await analyzeExperiment(augmentedContext, base64Data, thinkingLevel);
+      
       setAnalysis({ isLoading: false, result, error: null });
+
+      setHistory(prev => [
+        ...prev, 
+        { 
+          timestamp: Date.now(), 
+          telemetry: { ...telemetry }, 
+          analysis: result 
+        }
+      ]);
+
     } catch (err: any) {
+      console.error("Analysis Error:", err);
       setAnalysis({
         isLoading: false,
         result: null,
         error: err.message || "An unexpected error occurred.",
       });
-      // Stop monitoring on error
-      setIsAutoMonitoring(false);
     }
   };
 
   // --- Auto Monitoring Loop ---
   useEffect(() => {
-    if (isAutoMonitoring && inputMode === 'CAMERA') {
+    // Auto monitor works for CAMERA OR UPLOADED VIDEO
+    const canMonitor = (inputMode === 'CAMERA') || (inputMode === 'UPLOAD' && uploadType === 'VIDEO');
+
+    if (isAutoMonitoring && canMonitor) {
+      // Analyze immediately on start
+      handleAnalyze(); 
+
       const interval = setInterval(() => {
-        if (!analysis.isLoading) { // Don't queue if already processing
+        if (!analysis.isLoading) { 
           handleAnalyze();
         }
-      }, 10000); // Analyze every 10 seconds
+      }, 5000); // 5 seconds interval
       monitoringIntervalRef.current = interval as unknown as number;
     } else {
       if (monitoringIntervalRef.current) {
@@ -209,7 +334,19 @@ const App: React.FC = () => {
     return () => {
       if (monitoringIntervalRef.current) clearInterval(monitoringIntervalRef.current);
     };
-  }, [isAutoMonitoring, inputMode, analysis.isLoading, context, thinkingLevel, enablePreprocessing, telemetry]);
+  }, [isAutoMonitoring, inputMode, uploadType, context, thinkingLevel, enablePreprocessing]); 
+
+  const handleLiveCameraClick = () => {
+    setInputMode('CAMERA');
+    setIsAutoMonitoring(true);
+  };
+
+  const handleFileUploadClick = () => {
+    setInputMode('UPLOAD');
+    setIsAutoMonitoring(false);
+  };
+
+  const isMonitoringCapable = inputMode === 'CAMERA' || (inputMode === 'UPLOAD' && uploadType === 'VIDEO');
 
   return (
     <div className="flex flex-col md:flex-row h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden relative">
@@ -232,7 +369,7 @@ const App: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-grow h-full overflow-y-auto p-4 md:p-8 relative">
-        <div className="max-w-5xl mx-auto space-y-6">
+        <div className="max-w-6xl mx-auto space-y-6">
           
           {/* Header & Mode Switch */}
           <div className="flex flex-col md:flex-row md:justify-between md:items-center border-b border-slate-200 pb-4 gap-4">
@@ -243,7 +380,7 @@ const App: React.FC = () => {
             
             <div className="flex bg-white rounded-lg p-1 border border-slate-200 shadow-sm">
               <button 
-                onClick={() => setInputMode('UPLOAD')}
+                onClick={handleFileUploadClick}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
                   inputMode === 'UPLOAD' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                 }`}
@@ -251,7 +388,7 @@ const App: React.FC = () => {
                 File Upload
               </button>
               <button 
-                onClick={() => setInputMode('CAMERA')}
+                onClick={handleLiveCameraClick}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
                   inputMode === 'CAMERA' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                 }`}
@@ -277,10 +414,11 @@ const App: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="md:col-span-1 flex flex-col gap-4">
               <div className="relative bg-black rounded-xl overflow-hidden aspect-[4/3] shadow-md border border-slate-300 group">
-                {/* Camera View */}
+                
+                {/* 1. Camera View */}
                 {inputMode === 'CAMERA' && (
                    <video 
-                     ref={videoRef} 
+                     ref={webcamRef} 
                      autoPlay 
                      playsInline 
                      muted 
@@ -288,30 +426,74 @@ const App: React.FC = () => {
                    />
                 )}
                 
-                {/* Image Preview View */}
+                {/* 2. Upload View */}
                 {inputMode === 'UPLOAD' && (
                   <>
-                    {imagePreview ? (
-                      <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
-                    ) : (
+                    {!imagePreview && !videoFileSrc ? (
+                      // Empty State
                       <div 
                         onClick={triggerUpload}
                         className="w-full h-full flex flex-col items-center justify-center cursor-pointer hover:bg-slate-900 transition-colors"
                       >
                          <svg className="w-8 h-8 text-slate-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-                         <span className="text-slate-400 text-sm">Click to Upload</span>
+                         <span className="text-slate-400 text-sm">Upload Image or Video</span>
                       </div>
+                    ) : (
+                      // Content State
+                      <>
+                        {uploadType === 'IMAGE' && imagePreview && (
+                          <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
+                        )}
+                        {uploadType === 'VIDEO' && videoFileSrc && (
+                          <video 
+                            ref={fileVideoRef} 
+                            src={videoFileSrc} 
+                            controls 
+                            playsInline
+                            crossOrigin="anonymous"
+                            className="w-full h-full object-contain bg-black"
+                          />
+                        )}
+                        
+                        {/* Change File Button */}
+                        <div className="absolute top-2 right-2 z-20">
+                           <button 
+                             onClick={triggerUpload}
+                             className="p-1.5 bg-black/50 hover:bg-black/70 rounded-full text-white backdrop-blur-sm transition-colors"
+                             title="Change File"
+                           >
+                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                           </button>
+                        </div>
+                      </>
                     )}
-                    <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleFileChange} 
+                      accept="image/*,video/*" 
+                      className="hidden" 
+                    />
                   </>
                 )}
 
                 {/* Overlays */}
                 {enablePreprocessing && (
-                  <div className="absolute top-3 right-3 bg-emerald-600/90 text-white text-[10px] px-2 py-1 rounded-md font-mono backdrop-blur-md shadow-sm border border-emerald-400/30 z-10">
+                  <div className="absolute top-3 right-12 bg-emerald-600/90 text-white text-[10px] px-2 py-1 rounded-md font-mono backdrop-blur-md shadow-sm border border-emerald-400/30 z-10">
                     CV: ENHANCED
                   </div>
                 )}
+                
+                {isAutoMonitoring && isMonitoringCapable && (
+                   <div className="absolute top-3 left-3 flex items-center gap-2 text-white text-[10px] px-2 py-1 rounded-md font-mono backdrop-blur-md shadow-sm z-10 bg-red-600/90 border border-red-400/30">
+                     <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                     </span>
+                     {inputMode === 'CAMERA' ? 'LIVE MONITORING' : 'VIDEO ANALYSIS'}
+                   </div>
+                )}
+
                 {analysis.isLoading && (
                   <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-20">
                      <div className="flex flex-col items-center">
@@ -329,40 +511,37 @@ const App: React.FC = () => {
               <div className="grid grid-cols-1 gap-2">
                 <button
                   onClick={() => handleAnalyze()}
-                  disabled={analysis.isLoading || (inputMode === 'UPLOAD' && !imagePreview)}
+                  disabled={analysis.isLoading || (inputMode === 'UPLOAD' && !imagePreview && !videoFileSrc)}
                   className={`
                     w-full py-3 rounded-lg font-semibold shadow-sm transition-all flex items-center justify-center gap-2 border
-                    ${analysis.isLoading || (inputMode === 'UPLOAD' && !imagePreview)
+                    ${analysis.isLoading || (inputMode === 'UPLOAD' && !imagePreview && !videoFileSrc)
                       ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' 
                       : 'bg-white hover:bg-emerald-50 text-emerald-700 border-slate-200 hover:border-emerald-300'}
                   `}
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                  {inputMode === 'CAMERA' ? 'Capture & Analyze' : 'Analyze Image'}
+                  {isMonitoringCapable ? 'Capture & Analyze' : 'Analyze Image'}
                 </button>
 
-                {inputMode === 'CAMERA' && (
+                {isMonitoringCapable && (
                   <button
                     onClick={() => setIsAutoMonitoring(!isAutoMonitoring)}
                     className={`
                       w-full py-3 rounded-lg font-semibold shadow-sm transition-all flex items-center justify-center gap-2 border
                       ${isAutoMonitoring 
                         ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100' 
-                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}
                     `}
                   >
                     {isAutoMonitoring ? (
                       <>
-                        <span className="relative flex h-2 w-2 mr-1">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
-                        </span>
-                        Stop Monitoring
+                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                         Pause Monitoring
                       </>
                     ) : (
                       <>
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        Auto-Monitor (10s)
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        Resume Monitoring
                       </>
                     )}
                   </button>
@@ -391,12 +570,15 @@ const App: React.FC = () => {
                     </div>
                     <h3 className="text-lg font-medium text-slate-600">Awaiting Data</h3>
                     <p className="max-w-xs text-center text-sm mt-2">
-                      Start the camera or upload an image to begin the deductive reasoning process.
+                      Start the camera, upload a video/image, or select a Test Case from the library to begin.
                     </p>
                  </div>
               )}
             </div>
           </div>
+
+          {/* New Timeline Section */}
+          {history.length > 0 && <ExperimentTimeline history={history} />}
         </div>
       </main>
     </div>

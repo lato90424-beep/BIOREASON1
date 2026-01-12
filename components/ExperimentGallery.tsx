@@ -19,7 +19,7 @@ Reactants: 0.1M HCl (Analyte), 0.1M NaOH (Titrant)
 Indicator: Phenolphthalein
 Expected: Solution should turn from clear to faint pink at pH 8.2.
 Current State: Adding titrant dropwise near endpoint.`,
-    imageUrl: 'https://placehold.co/600x400/ffe4e6/be123c?text=Titration+Endpoint', // Pinkish
+    imageUrl: 'https://placehold.co/600x400/ffe4e6/be123c?text=Titration+Endpoint',
     colorTag: 'bg-pink-100 text-pink-800'
   },
   {
@@ -30,7 +30,7 @@ Current State: Adding titrant dropwise near endpoint.`,
 Reactants: Hydrogen Peroxide, Sulfuric Acid, Potassium Iodide, Sodium Thiosulfate, Starch
 Expected: Sudden color change from clear to dark blue-black.
 Current State: Reagents mixed 30 seconds ago. Waiting for color flash.`,
-    imageUrl: 'https://placehold.co/600x400/172554/60a5fa?text=Iodine+Clock', // Dark Blue
+    imageUrl: 'https://placehold.co/600x400/172554/60a5fa?text=Iodine+Clock',
     colorTag: 'bg-blue-100 text-blue-800'
   },
   {
@@ -41,7 +41,7 @@ Current State: Reagents mixed 30 seconds ago. Waiting for color flash.`,
 Conditions: Saturated solution cooling slowly.
 Expected: Formation of blue triclinic crystals.
 Current State: Solution resting for 2 hours. Checking for seed crystals.`,
-    imageUrl: 'https://placehold.co/600x400/0ea5e9/e0f2fe?text=CuSO4+Crystals', // Cyan/Blue
+    imageUrl: 'https://placehold.co/600x400/0ea5e9/e0f2fe?text=CuSO4+Crystals',
     colorTag: 'bg-cyan-100 text-cyan-800'
   },
   {
@@ -52,7 +52,7 @@ Current State: Solution resting for 2 hours. Checking for seed crystals.`,
 Reactants: Magnesium metal, Oxygen
 Expected: Bright white light emission and formation of white MgO powder.
 Current State: Heating ribbon over Bunsen burner.`,
-    imageUrl: 'https://placehold.co/600x400/fff7ed/ea580c?text=Mg+Combustion', // Orange
+    imageUrl: 'https://placehold.co/600x400/fff7ed/ea580c?text=Mg+Combustion',
     colorTag: 'bg-orange-100 text-orange-800'
   }
 ];
@@ -97,7 +97,7 @@ const ExperimentGallery: React.FC<ExperimentGalleryProps> = ({ isOpen, onClose, 
                 onClick={() => onSelect(exp)}
                 className="group flex flex-col bg-white rounded-xl border border-slate-200 overflow-hidden hover:shadow-lg hover:border-emerald-500/30 transition-all duration-300 text-left"
               >
-                <div className="relative h-48 w-full overflow-hidden">
+                <div className="relative h-48 w-full overflow-hidden bg-slate-100">
                    <img 
                      src={exp.imageUrl} 
                      alt={exp.title} 
@@ -106,7 +106,7 @@ const ExperimentGallery: React.FC<ExperimentGalleryProps> = ({ isOpen, onClose, 
                    <div className="absolute inset-0 bg-gradient-to-t from-slate-900/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                    <div className="absolute bottom-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0">
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500 text-white">
-                        Load Experiment
+                        Load Case
                       </span>
                    </div>
                 </div>
@@ -131,7 +131,7 @@ const ExperimentGallery: React.FC<ExperimentGalleryProps> = ({ isOpen, onClose, 
         
         {/* Footer */}
         <div className="p-4 border-t border-slate-100 bg-white text-center text-xs text-slate-400">
-          Select an experiment to automatically load its context and sample visual data.
+          Select an experiment to automatically load its context and reference image.
         </div>
       </div>
     </div>

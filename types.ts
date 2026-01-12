@@ -23,3 +23,9 @@ export interface TelemetryData {
   temperature: number;
   pressure: number;
 }
+
+export interface HistoryItem {
+  timestamp: number;
+  telemetry: TelemetryData;
+  analysis: AnalysisResult;
+}
