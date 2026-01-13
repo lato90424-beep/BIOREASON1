@@ -24,6 +24,13 @@ const App: React.FC = () => {
   const [inputMode, setInputMode] = useState<InputMode>('UPLOAD');
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isAutoMonitoring, setIsAutoMonitoring] = useState(false);
+
+  // Camera Capabilities State
+  const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>(null);
+  const [capabilities, setCapabilities] = useState<any>(null);
+  const [zoom, setZoom] = useState<number>(1);
+  const [focusMode, setFocusMode] = useState<'continuous' | 'manual'>('continuous');
+  const [focusDistance, setFocusDistance] = useState<number>(0);
   
   // Gallery State
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
@@ -68,9 +75,32 @@ const App: React.FC = () => {
   // --- Camera Logic ---
   const startCamera = async () => {
     try {
+      // Request camera with preference for environment (rear) camera
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
+        video: { 
+          facingMode: 'environment', 
+          width: { ideal: 1920 }, 
+          height: { ideal: 1080 } 
+        } 
       });
+
+      // Track Setup for Controls
+      const track = stream.getVideoTracks()[0];
+      setVideoTrack(track);
+
+      // Extract Capabilities (Zoom, Focus, etc.)
+      // Note: getCapabilities is standard but TypeScript definition might be incomplete in some envs
+      const caps: any = track.getCapabilities ? track.getCapabilities() : {};
+      setCapabilities(caps);
+
+      const settings: any = track.getSettings ? track.getSettings() : {};
+      
+      // Initialize state from current settings
+      if (settings.zoom) setZoom(settings.zoom);
+      // 'continuous' usually maps to 'auto' in UI
+      if (settings.focusMode) setFocusMode(settings.focusMode);
+      if (settings.focusDistance) setFocusDistance(settings.focusDistance);
+
       if (webcamRef.current) {
         webcamRef.current.src = ""; // Clear src if any
         webcamRef.current.srcObject = stream;
@@ -92,8 +122,44 @@ const App: React.FC = () => {
         webcamRef.current.srcObject = null;
       }
       setIsCameraActive(false);
-      // Only stop auto-monitoring if we are switching away from camera mode entirely
-      // logic handled in useEffect below
+      setVideoTrack(null);
+      setCapabilities(null);
+    }
+  };
+
+  // Handle Camera Controls
+  const handleZoomChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newZoom = parseFloat(e.target.value);
+    setZoom(newZoom);
+    if (videoTrack) {
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ zoom: newZoom }] } as any);
+      } catch (err) {
+        console.warn("Zoom constraint failed", err);
+      }
+    }
+  };
+
+  const toggleFocusMode = async () => {
+    if (!videoTrack) return;
+    const newMode = focusMode === 'continuous' ? 'manual' : 'continuous';
+    setFocusMode(newMode);
+    try {
+      await videoTrack.applyConstraints({ advanced: [{ focusMode: newMode }] } as any);
+    } catch (err) {
+      console.warn("Focus Mode constraint failed", err);
+    }
+  };
+
+  const handleFocusDistanceChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newDist = parseFloat(e.target.value);
+    setFocusDistance(newDist);
+    if (videoTrack && focusMode === 'manual') {
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ focusDistance: newDist }] } as any);
+      } catch (err) {
+        console.warn("Focus Distance constraint failed", err);
+      }
     }
   };
 
@@ -417,6 +483,7 @@ const App: React.FC = () => {
                 
                 {/* 1. Camera View */}
                 {inputMode === 'CAMERA' && (
+                  <>
                    <video 
                      ref={webcamRef} 
                      autoPlay 
@@ -424,6 +491,62 @@ const App: React.FC = () => {
                      muted 
                      className="w-full h-full object-cover"
                    />
+                   
+                   {/* Camera Controls Overlay */}
+                   {capabilities && (
+                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 flex flex-col gap-2 transition-opacity opacity-0 group-hover:opacity-100 duration-300">
+                       
+                       {/* Zoom Control */}
+                       {capabilities.zoom && (
+                         <div className="flex items-center gap-3">
+                            <span className="text-white text-xs font-mono w-10 text-right">ZOOM</span>
+                            <input 
+                              type="range" 
+                              min={capabilities.zoom.min} 
+                              max={capabilities.zoom.max} 
+                              step={capabilities.zoom.step} 
+                              value={zoom} 
+                              onChange={handleZoomChange}
+                              className="flex-grow h-1.5 bg-white/30 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                            />
+                            <span className="text-white text-xs font-mono w-8">{zoom.toFixed(1)}x</span>
+                         </div>
+                       )}
+
+                       {/* Focus Controls */}
+                       {(capabilities.focusMode || capabilities.focusDistance) && (
+                         <div className="flex items-center gap-3">
+                            <span className="text-white text-xs font-mono w-10 text-right">FOCUS</span>
+                            
+                            {/* Auto/Manual Toggle */}
+                            {capabilities.focusMode && capabilities.focusMode.length > 1 && (
+                               <button 
+                                 onClick={toggleFocusMode}
+                                 className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-colors ${
+                                   focusMode === 'continuous' ? 'bg-emerald-500 text-white' : 'bg-white/20 text-white hover:bg-white/40'
+                                 }`}
+                               >
+                                 {focusMode === 'continuous' ? 'Auto' : 'Manual'}
+                               </button>
+                            )}
+
+                            {/* Distance Slider */}
+                            {focusMode === 'manual' && capabilities.focusDistance && (
+                               <input 
+                                  type="range" 
+                                  min={capabilities.focusDistance.min} 
+                                  max={capabilities.focusDistance.max} 
+                                  step={capabilities.focusDistance.step} 
+                                  value={focusDistance} 
+                                  onChange={handleFocusDistanceChange}
+                                  className="flex-grow h-1.5 bg-white/30 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                               />
+                            )}
+                         </div>
+                       )}
+                     </div>
+                   )}
+                  </>
                 )}
                 
                 {/* 2. Upload View */}
